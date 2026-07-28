@@ -226,7 +226,6 @@ def get_week_views():
         "%Y-%m-%d"
     )
 
-
     end = week_end().strftime(
         "%Y-%m-%d"
     )
@@ -249,44 +248,16 @@ def get_week_views():
     history = cursor.fetchall()
 
 
-    totals = {}
+    latest = {}
 
 
     for video_id, views in history:
 
-        if video_id not in totals:
-
-            totals[video_id] = []
-
-        totals[video_id].append(
-            views
-        )
-
-
-    results = []
-
-
-    for video_id, values in totals.items():
-
-        if len(values) > 0:
-
-            growth = (
-                values[-1]
-                -
-                values[0]
-            )
-
-            if growth < 0:
-                growth = 0
-
-
-            results.append(
-                growth
-            )
+        latest[video_id] = views
 
 
     return sorted(
-        results,
+        latest.values(),
         reverse=True
     )
 

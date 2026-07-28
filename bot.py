@@ -1,8 +1,13 @@
 import telebot
 import sqlite3
-from datetime import datetime, timedelta
+import os
+import re
+from datetime import datetime
+
+from googleapiclient.discovery import build
 
 TOKEN = "8206628983:AAHhyn26UBXgGwOEiD49_399KPASmsRD30I"
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -14,6 +19,7 @@ CREATE TABLE IF NOT EXISTS videos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     link TEXT,
     platform TEXT,
+    views INTEGER DEFAULT 0,
     date TEXT
 )
 """)
@@ -21,157 +27,111 @@ CREATE TABLE IF NOT EXISTS videos (
 db.commit()
 
 
-@bot.message_handler(commands=['start'])
+def get_youtube_views(link):
+
+    match = re.search(r"(?:v=|youtu.be/|shorts/)([^&?/]+)", link)
+
+    if not match:
+        return None
+
+    video_id = match.group(1)
+
+    youtube = build(
+        "youtube",
+        "v3",
+        developerKey=YOUTUBE_API_KEY
+    )
+
+    response = youtube.videos().list(
+        part="statistics",
+        id=video_id
+    ).execute()
+
+    if response.get("items"):
+        views = response["items"][0]["statistics"].get("viewCount")
+        return int(views)
+
+    return None
+
+
+@bot.message_handler(commands=["start"])
 def start(message):
     bot.send_message(
         message.chat.id,
-        "Привет! Я бот для учёта TikTok и YouTube Shorts.\n"
-        "Отправь ссылку на ролик."
+        "Привет! Отправь ссылку на TikTok или YouTube Shorts."
     )
 
 
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    bot.send_message(
-        message.chat.id,
-        "📌 Команды:\n\n"
-        "/week — статистика за эту неделю\n"
-        "/stats — общая статистика\n"
-        "/all — последние ролики\n"
-        "/help — помощь"
-    )
-
-
-@bot.message_handler(commands=['stats'])
+@bot.message_handler(commands=["stats"])
 def stats(message):
+
     cursor.execute("""
-    SELECT platform, COUNT(*)
+    SELECT platform, COUNT(*), SUM(views)
     FROM videos
     GROUP BY platform
     """)
 
     result = cursor.fetchall()
 
-    if not result:
-        bot.send_message(
-            message.chat.id,
-            "📊 Пока нет роликов."
-        )
-        return
+    text = "📊 Статистика:\n\n"
 
-    text = "📊 Общая статистика:\n\n"
-
-    for platform, count in result:
-        text += f"{platform}: {count} роликов\n"
-
-    bot.send_message(message.chat.id, text)
-
-
-@bot.message_handler(commands=['week'])
-def week(message):
-
-    today = datetime.now()
-    monday = today - timedelta(days=today.weekday())
-
-    monday = monday.replace(
-        hour=0,
-        minute=0,
-        second=0
-    )
-
-    cursor.execute("""
-    SELECT platform, COUNT(*)
-    FROM videos
-    WHERE date >= ?
-    GROUP BY platform
-    """,
-    (monday.strftime("%Y-%m-%d"),))
-
-    result = cursor.fetchall()
-
-    if not result:
-        bot.send_message(
-            message.chat.id,
-            "📊 За эту неделю роликов пока нет."
-        )
-        return
-
-    text = "📊 Статистика недели:\n\n"
-    total = 0
-
-    for platform, count in result:
-        text += f"{platform}: {count} роликов\n"
-        total += count
-
-    text += f"\nВсего: {total} роликов"
-
-    bot.send_message(message.chat.id, text)
-
-
-@bot.message_handler(commands=['all'])
-def all_videos(message):
-
-    cursor.execute("""
-    SELECT platform, date, link
-    FROM videos
-    ORDER BY id DESC
-    LIMIT 10
-    """)
-
-    videos = cursor.fetchall()
-
-    if not videos:
-        bot.send_message(
-            message.chat.id,
-            "📋 Список пуст."
-        )
-        return
-
-    text = "📋 Последние ролики:\n\n"
-
-    for i, video in enumerate(videos, start=1):
-        platform, date, link = video
-
+    for platform, count, views in result:
         text += (
-            f"{i}. {platform}\n"
-            f"📅 {date}\n"
-            f"🔗 {link}\n\n"
+            f"{platform}\n"
+            f"Роликов: {count}\n"
+            f"Просмотров: {views or 0}\n\n"
         )
 
     bot.send_message(message.chat.id, text)
 
 
-@bot.message_handler(func=lambda message: not message.text.startswith('/'))
-def save_link(message):
+@bot.message_handler(func=lambda message: not message.text.startswith("/"))
+def save_video(message):
 
     link = message.text
 
-    if "tiktok.com" in link:
-        platform = "TikTok"
+    views = 0
 
-    elif "youtube.com" in link or "youtu.be" in link:
+    if "youtube.com" in link or "youtu.be" in link:
+
         platform = "YouTube"
+
+        try:
+            views = get_youtube_views(link) or 0
+        except:
+            views = 0
+
+    elif "tiktok.com" in link:
+
+        platform = "TikTok"
 
     else:
         bot.send_message(
             message.chat.id,
-            "❌ Отправь ссылку TikTok или YouTube Shorts."
+            "❌ Нужна ссылка TikTok или YouTube Shorts"
         )
         return
+
 
     date = datetime.now().strftime("%Y-%m-%d")
 
     cursor.execute(
-        "INSERT INTO videos (link, platform, date) VALUES (?, ?, ?)",
-        (link, platform, date)
+        """
+        INSERT INTO videos
+        (link, platform, views, date)
+        VALUES (?, ?, ?, ?)
+        """,
+        (link, platform, views, date)
     )
 
     db.commit()
 
+
     bot.send_message(
         message.chat.id,
         f"✅ Сохранил!\n"
-        f"Платформа: {platform}"
+        f"Платформа: {platform}\n"
+        f"Просмотры: {views}"
     )
 
 

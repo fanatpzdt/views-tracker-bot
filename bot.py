@@ -496,41 +496,44 @@ def report_command(message):
     func=lambda message:
     not message.text.startswith("/")
 )
+
+@bot.message_handler(
+    func=lambda message:
+    not message.text.startswith("/")
+)
 def save_video(message):
 
     link = message.text
 
-
-    video_id = extract_video_id(
-        link
-    )
-
-cursor.execute(
-    """
-    SELECT id
-    FROM videos
-    WHERE video_id = ?
-    """,
-    (video_id,)
-)
-
-exists = cursor.fetchone()
-
-
-if exists:
-
-    bot.send_message(
-        message.chat.id,
-        "⚠️ Этот ролик уже добавлен."
-    )
-
-    return    
+    video_id = extract_video_id(link)
 
     if not video_id:
 
         bot.send_message(
             message.chat.id,
             "❌ Нужна ссылка YouTube Shorts."
+        )
+
+        return
+
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM videos
+        WHERE video_id = ?
+        """,
+        (video_id,)
+    )
+
+    exists = cursor.fetchone()
+
+
+    if exists:
+
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Этот ролик уже добавлен."
         )
 
         return

@@ -32,6 +32,14 @@ def start(message):
 @bot.message_handler(func=lambda message: True)
 def save_link(message):
     link = message.text
+
+    if "tiktok.com" not in link and "youtube.com" not in link and "youtu.be" not in link:
+        bot.send_message(
+            message.chat.id,
+            "❌ Отправь только ссылку на TikTok или YouTube Shorts"
+        )
+        return
+
     date = datetime.now().strftime("%d.%m.%Y")
 
     cursor.execute(

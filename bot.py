@@ -505,6 +505,26 @@ def save_video(message):
         link
     )
 
+cursor.execute(
+    """
+    SELECT id
+    FROM videos
+    WHERE video_id = ?
+    """,
+    (video_id,)
+)
+
+exists = cursor.fetchone()
+
+
+if exists:
+
+    bot.send_message(
+        message.chat.id,
+        "⚠️ Этот ролик уже добавлен."
+    )
+
+    return    
 
     if not video_id:
 

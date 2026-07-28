@@ -7,7 +7,7 @@ from datetime import datetime
 from googleapiclient.discovery import build
 
 
-TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"
+TOKEN = "8206628983:AAHhyn26UBXgGwOEiD49_399KPASmsRD30I"
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 bot = telebot.TeleBot(TOKEN)

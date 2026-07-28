@@ -13,18 +13,28 @@ from googleapiclient.discovery import build
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
+
 bot = telebot.TeleBot(TOKEN)
 
 
-db = sqlite3.connect("videos.db", check_same_thread=False)
+db = sqlite3.connect(
+    "videos.db",
+    check_same_thread=False
+)
+
 cursor = db.cursor()
+
+
+# =========================
+# DATABASE
+# =========================
 
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS videos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     link TEXT,
-    platform TEXT,
+    video_id TEXT,
     date TEXT
 )
 """)
@@ -52,34 +62,87 @@ db.commit()
 
 
 
+# =========================
+# OWNER
+# =========================
+
+
 def get_owner():
+
     cursor.execute(
         "SELECT user_id FROM owner LIMIT 1"
     )
+
     result = cursor.fetchone()
 
-    return result[0] if result else None
+    if result:
+        return result[0]
+
+    return None
 
 
 
 def is_owner(message):
+
     return message.chat.id == get_owner()
 
 
 
-def get_youtube_views(link):
+# =========================
+# DATES
+# =========================
+
+
+def week_start():
+
+    now = datetime.now()
+
+    monday = now - timedelta(
+        days=now.weekday()
+    )
+
+    return monday.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+
+
+def week_end():
+
+    return (
+        week_start()
+        + timedelta(days=6)
+    ).replace(
+        hour=23,
+        minute=59,
+        second=59
+    )
+
+
+
+# =========================
+# YOUTUBE
+# =========================
+
+
+def extract_video_id(link):
 
     match = re.search(
-        r"(?:v=|youtu.be/|shorts/)([^&?/]+)",
+        r"(?:shorts/|watch\?v=|youtu.be/)([^&?/]+)",
         link
     )
 
-    if not match:
-        return None
+    if match:
+        return match.group(1)
+
+    return None
 
 
-    video_id = match.group(1)
 
+def get_views(video_id):
 
     youtube = build(
         "youtube",
@@ -88,161 +151,292 @@ def get_youtube_views(link):
     )
 
 
-    response = youtube.videos().list(
+    result = youtube.videos().list(
         part="statistics",
         id=video_id
     ).execute()
 
 
-    if response.get("items"):
+    if result.get("items"):
+
         return int(
-            response["items"][0]["statistics"]["viewCount"]
+            result["items"][0]
+            ["statistics"]
+            ["viewCount"]
         )
 
-    return None
 
+    return 0
+
+
+
+# =========================
+# UPDATE VIEWS
+# =========================
 
 
 def update_views():
 
-    cursor.execute("""
-    SELECT id, link
-    FROM videos
-    WHERE platform='YouTube'
-    """)
+    cursor.execute(
+        """
+        SELECT id, video_id
+        FROM videos
+        """
+    )
 
     videos = cursor.fetchall()
 
 
-    for video_id, link in videos:
-
-        views = get_youtube_views(link)
-
-        if views is not None:
-
-            cursor.execute(
-                """
-                INSERT INTO views_history
-                (video_id, views, date)
-                VALUES (?, ?, ?)
-                """,
-                (
-                    video_id,
-                    views,
-                    datetime.now().strftime("%Y-%m-%d")
-                )
-            )
-
-    db.commit()
-
-
-
-def week_start():
-
-    now = datetime.now()
-
-    monday = now - timedelta(days=now.weekday())
-
-    return monday.strftime("%Y-%m-%d")
-
-def send_week_report(chat_id):
-
-    start = week_start()
-
-    cursor.execute("""
-    SELECT COUNT(*)
-    FROM videos
-    WHERE date >= ?
-    """, (start,))
-
-    videos = cursor.fetchone()[0]
-
-
-    cursor.execute("""
-    SELECT SUM(views_history.views)
-    FROM views_history
-    JOIN videos
-    ON videos.id = views_history.video_id
-    WHERE views_history.date >= ?
-    """, (start,))
-
-
-    views = cursor.fetchone()[0] or 0
-
-
-    cursor.execute("""
-    SELECT videos.link, MAX(views_history.views)
-    FROM videos
-    JOIN views_history
-    ON videos.id = views_history.video_id
-    WHERE views_history.date >= ?
-    GROUP BY videos.id
-    ORDER BY MAX(views_history.views) DESC
-    LIMIT 1
-    """, (start,))
-
-
-    best = cursor.fetchone()
-
-
-    text = (
-        "📊 Отчёт недели\n\n"
-        f"📅 С {start}\n\n"
-        f"🎬 Новых роликов: {videos}\n"
-        f"👀 Просмотров: {views}\n"
+    today = datetime.now().strftime(
+        "%Y-%m-%d"
     )
 
 
-    if best:
-        text += (
-            "\n🔥 Лучший ролик:\n"
-            f"{best[1]} просмотров\n"
-            f"{best[0]}"
+    for db_id, youtube_id in videos:
+
+        views = get_views(
+            youtube_id
         )
 
 
-    bot.send_message(chat_id, text)
+        cursor.execute(
+            """
+            INSERT INTO views_history
+            (video_id, views, date)
+            VALUES (?, ?, ?)
+            """,
+            (
+                db_id,
+                views,
+                today
+            )
+        )
+
+
+    db.commit()
+
+# =========================
+# REPORTS
+# =========================
+
+
+def get_week_views():
+
+    start = week_start().strftime(
+        "%Y-%m-%d"
+    )
+
+
+    end = week_end().strftime(
+        "%Y-%m-%d"
+    )
+
+
+    cursor.execute(
+        """
+        SELECT video_id, views
+        FROM views_history
+        WHERE date BETWEEN ? AND ?
+        ORDER BY date ASC
+        """,
+        (
+            start,
+            end
+        )
+    )
+
+
+    history = cursor.fetchall()
+
+
+    totals = {}
+
+
+    for video_id, views in history:
+
+        if video_id not in totals:
+
+            totals[video_id] = []
+
+        totals[video_id].append(
+            views
+        )
+
+
+    results = []
+
+
+    for video_id, values in totals.items():
+
+        if len(values) > 0:
+
+            growth = (
+                values[-1]
+                -
+                values[0]
+            )
+
+            if growth < 0:
+                growth = 0
+
+
+            results.append(
+                growth
+            )
+
+
+    return sorted(
+        results,
+        reverse=True
+    )
 
 
 
-@bot.message_handler(commands=["start"])
+def make_report(title):
+
+    start = week_start()
+
+    end = week_end()
+
+
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM videos
+        WHERE date BETWEEN ? AND ?
+        """,
+        (
+            start.strftime("%Y-%m-%d"),
+            end.strftime("%Y-%m-%d")
+        )
+    )
+
+
+    count = cursor.fetchone()[0]
+
+
+    views = get_week_views()
+
+
+    total = sum(views)
+
+
+    text = (
+        f"📊 {title}\n\n"
+        f"📅 "
+        f"{start.strftime('%d.%m')}"
+        f" - "
+        f"{end.strftime('%d.%m')}\n\n"
+        f"🎬 Роликов: {count}\n\n"
+        f"👀 Просмотров: {total}\n\n"
+        f"🏆 ТОП-3:\n"
+    )
+
+
+    for i, value in enumerate(
+        views[:3],
+        1
+    ):
+
+        text += (
+            f"{i}. {value}\n"
+        )
+
+
+    return text
+
+
+
+def send_daily_report():
+
+    owner = get_owner()
+
+    if owner:
+
+        update_views()
+
+        bot.send_message(
+            owner,
+            make_report(
+                "Статистика дня"
+            )
+        )
+
+
+
+def send_week_report():
+
+    owner = get_owner()
+
+    if owner:
+
+        update_views()
+
+        bot.send_message(
+            owner,
+            make_report(
+                "Итоги недели"
+            )
+        )
+
+
+
+# =========================
+# COMMANDS
+# =========================
+
+
+@bot.message_handler(
+    commands=["start"]
+)
 def start(message):
 
     bot.send_message(
         message.chat.id,
-        "Привет! Отправь ссылку на TikTok или YouTube Shorts."
+        "Отправь ссылку на YouTube Shorts."
     )
 
 
 
-@bot.message_handler(commands=["myid"])
+@bot.message_handler(
+    commands=["myid"]
+)
 def myid(message):
 
     if get_owner():
 
         bot.send_message(
             message.chat.id,
-            "⚠️ Владелец уже установлен."
+            "Владелец уже установлен."
         )
+
         return
 
 
     cursor.execute(
-        "INSERT INTO owner (user_id) VALUES (?)",
-        (message.chat.id,)
+        """
+        INSERT INTO owner(user_id)
+        VALUES(?)
+        """,
+        (
+            message.chat.id,
+        )
     )
+
 
     db.commit()
 
 
     bot.send_message(
         message.chat.id,
-        "✅ Ты владелец бота."
+        "✅ Владелец добавлен."
     )
 
 
 
-@bot.message_handler(commands=["update"])
+@bot.message_handler(
+    commands=["update"]
+)
 def update_command(message):
 
     if not is_owner(message):
@@ -257,88 +451,66 @@ def update_command(message):
         "✅ Просмотры обновлены."
     )
 
-
-
-@bot.message_handler(commands=["week"])
-def week(message):
-
-    if not is_owner(message):
-        return
-
-    send_week_report(message.chat.id)
-
-
-
-@bot.message_handler(commands=["report"])
-def report(message):
+@bot.message_handler(
+    commands=["week"]
+)
+def week_command(message):
 
     if not is_owner(message):
         return
-
-    send_week_report(message.chat.id)
-
-
-
-@bot.message_handler(commands=["top"])
-def top(message):
-
-    if not is_owner(message):
-        return
-
-
-    cursor.execute("""
-    SELECT videos.link, MAX(views_history.views)
-    FROM videos
-    JOIN views_history
-    ON videos.id = views_history.video_id
-    GROUP BY videos.id
-    ORDER BY MAX(views_history.views) DESC
-    LIMIT 5
-    """)
-
-
-    result = cursor.fetchall()
-
-
-    text = "🏆 Топ роликов:\n\n"
-
-
-    for i, row in enumerate(result, 1):
-
-        text += (
-            f"{i}. {row[1]} просмотров\n"
-            f"{row[0]}\n\n"
-        )
 
 
     bot.send_message(
         message.chat.id,
-        text
+        make_report(
+            "Статистика недели"
+        )
     )
 
 
 
 @bot.message_handler(
-    func=lambda message: not message.text.startswith("/")
+    commands=["report"]
+)
+def report_command(message):
+
+    if not is_owner(message):
+        return
+
+
+    bot.send_message(
+        message.chat.id,
+        make_report(
+            "Итоги недели"
+        )
+    )
+
+
+
+# =========================
+# SAVE YOUTUBE SHORT
+# =========================
+
+
+@bot.message_handler(
+    func=lambda message:
+    not message.text.startswith("/")
 )
 def save_video(message):
 
     link = message.text
 
 
-    if "youtube.com" in link or "youtu.be" in link:
+    video_id = extract_video_id(
+        link
+    )
 
-        platform = "YouTube"
 
-    elif "tiktok.com" in link:
-
-        platform = "TikTok"
-
-    else:
+    if not video_id:
 
         bot.send_message(
             message.chat.id,
-            "❌ Нужна ссылка TikTok или YouTube."
+            "❌ Нужна ссылка YouTube Shorts."
         )
 
         return
@@ -347,13 +519,15 @@ def save_video(message):
     cursor.execute(
         """
         INSERT INTO videos
-        (link, platform, date)
+        (link, video_id, date)
         VALUES (?, ?, ?)
         """,
         (
             link,
-            platform,
-            datetime.now().strftime("%Y-%m-%d")
+            video_id,
+            datetime.now().strftime(
+                "%Y-%m-%d"
+            )
         )
     )
 
@@ -363,13 +537,30 @@ def save_video(message):
 
     bot.send_message(
         message.chat.id,
-        "✅ Ролик сохранён."
+        "✅ Shorts сохранён."
     )
 
 
 
-schedule.every().sunday.at("00:00").do(
-    lambda: send_week_report(get_owner())
+# =========================
+# AUTOMATION
+# =========================
+
+
+# каждый день в 00:00
+schedule.every().day.at(
+    "00:00"
+).do(
+    send_daily_report
+)
+
+
+# понедельник 00:05
+# итог прошлой недели
+schedule.every().monday.at(
+    "00:05"
+).do(
+    send_week_report
 )
 
 
@@ -389,6 +580,11 @@ threading.Thread(
     daemon=True
 ).start()
 
+
+
+# =========================
+# START BOT
+# =========================
 
 
 bot.infinity_polling()

@@ -2,12 +2,15 @@ import telebot
 import sqlite3
 import os
 import re
+import schedule
+import threading
+import time
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from googleapiclient.discovery import build
 
 
-TOKEN = "8206628983:AAHhyn26UBXgGwOEiD49_399KPASmsRD30I"
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 bot = telebot.TeleBot(TOKEN)
@@ -49,15 +52,18 @@ db.commit()
 
 
 
-def is_owner(message):
-
+def get_owner():
     cursor.execute(
         "SELECT user_id FROM owner LIMIT 1"
     )
+    result = cursor.fetchone()
 
-    owner = cursor.fetchone()
+    return result[0] if result else None
 
-    return owner and owner[0] == message.chat.id
+
+
+def is_owner(message):
+    return message.chat.id == get_owner()
 
 
 
@@ -97,89 +103,7 @@ def get_youtube_views(link):
 
 
 
-@bot.message_handler(commands=["start"])
-def start(message):
-
-    bot.send_message(
-        message.chat.id,
-        "Привет! Я твой трекер просмотров."
-    )
-
-
-
-@bot.message_handler(commands=["myid"])
-def myid(message):
-
-    cursor.execute(
-        "SELECT user_id FROM owner LIMIT 1"
-    )
-
-    owner = cursor.fetchone()
-
-
-    if owner:
-        bot.send_message(
-            message.chat.id,
-            "⚠️ Владелец уже установлен."
-        )
-        return
-
-
-    cursor.execute(
-        "INSERT INTO owner (user_id) VALUES (?)",
-        (message.chat.id,)
-    )
-
-    db.commit()
-
-
-    bot.send_message(
-        message.chat.id,
-        "✅ Ты добавлен как владелец бота."
-    )
-
-
-
-@bot.message_handler(commands=["report"])
-def report(message):
-
-    if not is_owner(message):
-        bot.send_message(
-            message.chat.id,
-            "❌ Нет доступа."
-        )
-        return
-
-
-    cursor.execute(
-        "SELECT COUNT(*) FROM videos"
-    )
-
-    videos = cursor.fetchone()[0]
-
-
-    cursor.execute(
-        "SELECT SUM(views) FROM views_history"
-    )
-
-    views = cursor.fetchone()[0] or 0
-
-
-    bot.send_message(
-        message.chat.id,
-        f"📊 Отчёт:\n\n"
-        f"Роликов: {videos}\n"
-        f"Просмотров: {views}"
-    )
-
-
-
-@bot.message_handler(commands=["update"])
-def update_views(message):
-
-    if not is_owner(message):
-        return
-
+def update_views():
 
     cursor.execute("""
     SELECT id, link
@@ -188,9 +112,6 @@ def update_views(message):
     """)
 
     videos = cursor.fetchall()
-
-
-    count = 0
 
 
     for video_id, link in videos:
@@ -212,36 +133,214 @@ def update_views(message):
                 )
             )
 
-            count += 1
+    db.commit()
 
+
+
+def week_start():
+
+    now = datetime.now()
+
+    monday = now - timedelta(days=now.weekday())
+
+    return monday.strftime("%Y-%m-%d")
+
+def send_week_report(chat_id):
+
+    start = week_start()
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM videos
+    WHERE date >= ?
+    """, (start,))
+
+    videos = cursor.fetchone()[0]
+
+
+    cursor.execute("""
+    SELECT SUM(views_history.views)
+    FROM views_history
+    JOIN videos
+    ON videos.id = views_history.video_id
+    WHERE views_history.date >= ?
+    """, (start,))
+
+
+    views = cursor.fetchone()[0] or 0
+
+
+    cursor.execute("""
+    SELECT videos.link, MAX(views_history.views)
+    FROM videos
+    JOIN views_history
+    ON videos.id = views_history.video_id
+    WHERE views_history.date >= ?
+    GROUP BY videos.id
+    ORDER BY MAX(views_history.views) DESC
+    LIMIT 1
+    """, (start,))
+
+
+    best = cursor.fetchone()
+
+
+    text = (
+        "📊 Отчёт недели\n\n"
+        f"📅 С {start}\n\n"
+        f"🎬 Новых роликов: {videos}\n"
+        f"👀 Просмотров: {views}\n"
+    )
+
+
+    if best:
+        text += (
+            "\n🔥 Лучший ролик:\n"
+            f"{best[1]} просмотров\n"
+            f"{best[0]}"
+        )
+
+
+    bot.send_message(chat_id, text)
+
+
+
+@bot.message_handler(commands=["start"])
+def start(message):
+
+    bot.send_message(
+        message.chat.id,
+        "Привет! Отправь ссылку на TikTok или YouTube Shorts."
+    )
+
+
+
+@bot.message_handler(commands=["myid"])
+def myid(message):
+
+    if get_owner():
+
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Владелец уже установлен."
+        )
+        return
+
+
+    cursor.execute(
+        "INSERT INTO owner (user_id) VALUES (?)",
+        (message.chat.id,)
+    )
 
     db.commit()
 
 
     bot.send_message(
         message.chat.id,
-        f"✅ Обновлено роликов: {count}"
+        "✅ Ты владелец бота."
     )
 
 
 
-@bot.message_handler(func=lambda message: not message.text.startswith("/"))
+@bot.message_handler(commands=["update"])
+def update_command(message):
+
+    if not is_owner(message):
+        return
+
+
+    update_views()
+
+
+    bot.send_message(
+        message.chat.id,
+        "✅ Просмотры обновлены."
+    )
+
+
+
+@bot.message_handler(commands=["week"])
+def week(message):
+
+    if not is_owner(message):
+        return
+
+    send_week_report(message.chat.id)
+
+
+
+@bot.message_handler(commands=["report"])
+def report(message):
+
+    if not is_owner(message):
+        return
+
+    send_week_report(message.chat.id)
+
+
+
+@bot.message_handler(commands=["top"])
+def top(message):
+
+    if not is_owner(message):
+        return
+
+
+    cursor.execute("""
+    SELECT videos.link, MAX(views_history.views)
+    FROM videos
+    JOIN views_history
+    ON videos.id = views_history.video_id
+    GROUP BY videos.id
+    ORDER BY MAX(views_history.views) DESC
+    LIMIT 5
+    """)
+
+
+    result = cursor.fetchall()
+
+
+    text = "🏆 Топ роликов:\n\n"
+
+
+    for i, row in enumerate(result, 1):
+
+        text += (
+            f"{i}. {row[1]} просмотров\n"
+            f"{row[0]}\n\n"
+        )
+
+
+    bot.send_message(
+        message.chat.id,
+        text
+    )
+
+
+
+@bot.message_handler(
+    func=lambda message: not message.text.startswith("/")
+)
 def save_video(message):
 
     link = message.text
 
 
     if "youtube.com" in link or "youtu.be" in link:
+
         platform = "YouTube"
 
     elif "tiktok.com" in link:
+
         platform = "TikTok"
 
     else:
+
         bot.send_message(
             message.chat.id,
-            "❌ Нужна ссылка TikTok или YouTube Shorts."
+            "❌ Нужна ссылка TikTok или YouTube."
         )
+
         return
 
 
@@ -258,6 +357,7 @@ def save_video(message):
         )
     )
 
+
     db.commit()
 
 
@@ -265,6 +365,30 @@ def save_video(message):
         message.chat.id,
         "✅ Ролик сохранён."
     )
+
+
+
+schedule.every().sunday.at("00:00").do(
+    lambda: send_week_report(get_owner())
+)
+
+
+
+def scheduler():
+
+    while True:
+
+        schedule.run_pending()
+
+        time.sleep(30)
+
+
+
+threading.Thread(
+    target=scheduler,
+    daemon=True
+).start()
+
 
 
 bot.infinity_polling()

@@ -2,34 +2,51 @@ import telebot
 import sqlite3
 import os
 import re
-from datetime import datetime
 
+from datetime import datetime
 from googleapiclient.discovery import build
 
-TOKEN = "8206628983:AAHhyn26UBXgGwOEiD49_399KPASmsRD30I"
+
+TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 bot = telebot.TeleBot(TOKEN)
 
+
 db = sqlite3.connect("videos.db", check_same_thread=False)
 cursor = db.cursor()
+
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS videos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     link TEXT,
     platform TEXT,
-    views INTEGER DEFAULT 0,
     date TEXT
 )
 """)
 
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS views_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id INTEGER,
+    views INTEGER,
+    date TEXT
+)
+""")
+
+
 db.commit()
+
 
 
 def get_youtube_views(link):
 
-    match = re.search(r"(?:v=|youtu.be/|shorts/)([^&?/]+)", link)
+    match = re.search(
+        r"(?:v=|youtu.be/|shorts/)([^&?/]+)",
+        link
+    )
 
     if not match:
         return None
@@ -47,6 +64,7 @@ def get_youtube_views(link):
         id=video_id
     ).execute()
 
+
     if response.get("items"):
         views = response["items"][0]["statistics"].get("viewCount")
         return int(views)
@@ -54,35 +72,145 @@ def get_youtube_views(link):
     return None
 
 
+
 @bot.message_handler(commands=["start"])
 def start(message):
+
     bot.send_message(
         message.chat.id,
         "Привет! Отправь ссылку на TikTok или YouTube Shorts."
     )
 
 
+
+@bot.message_handler(commands=["update"])
+def update_views(message):
+
+    cursor.execute("""
+    SELECT id, link, platform
+    FROM videos
+    WHERE platform='YouTube'
+    """)
+
+    videos = cursor.fetchall()
+
+
+    updated = 0
+
+
+    for video in videos:
+
+        video_id, link, platform = video
+
+        views = get_youtube_views(link)
+
+
+        if views is not None:
+
+            cursor.execute(
+                """
+                INSERT INTO views_history
+                (video_id, views, date)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    video_id,
+                    views,
+                    datetime.now().strftime("%Y-%m-%d")
+                )
+            )
+
+            updated += 1
+
+
+    db.commit()
+
+
+    bot.send_message(
+        message.chat.id,
+        f"✅ Проверено роликов: {updated}"
+    )
+
+
+
+@bot.message_handler(commands=["top"])
+def top(message):
+
+    cursor.execute("""
+    SELECT 
+    videos.link,
+    MAX(views_history.views)
+
+    FROM videos
+
+    JOIN views_history
+    ON videos.id = views_history.video_id
+
+    GROUP BY videos.id
+
+    ORDER BY MAX(views_history.views) DESC
+
+    LIMIT 5
+    """)
+
+
+    result = cursor.fetchall()
+
+
+    if not result:
+        bot.send_message(
+            message.chat.id,
+            "Пока нет статистики."
+        )
+        return
+
+
+    text = "🏆 Топ роликов:\n\n"
+
+
+    for i, item in enumerate(result, start=1):
+
+        link, views = item
+
+        text += (
+            f"{i}. {views} просмотров\n"
+            f"{link}\n\n"
+        )
+
+
+    bot.send_message(
+        message.chat.id,
+        text
+    )
+
+
+
 @bot.message_handler(commands=["stats"])
 def stats(message):
 
     cursor.execute("""
-    SELECT platform, COUNT(*), SUM(views)
+    SELECT COUNT(*)
     FROM videos
-    GROUP BY platform
     """)
 
-    result = cursor.fetchall()
+    count = cursor.fetchone()[0]
 
-    text = "📊 Статистика:\n\n"
 
-    for platform, count, views in result:
-        text += (
-            f"{platform}\n"
-            f"Роликов: {count}\n"
-            f"Просмотров: {views or 0}\n\n"
-        )
+    cursor.execute("""
+    SELECT SUM(views)
+    FROM views_history
+    """)
 
-    bot.send_message(message.chat.id, text)
+    views = cursor.fetchone()[0] or 0
+
+
+    bot.send_message(
+        message.chat.id,
+        f"📊 Статистика:\n\n"
+        f"Роликов: {count}\n"
+        f"Просмотров: {views}"
+    )
+
 
 
 @bot.message_handler(func=lambda message: not message.text.startswith("/"))
@@ -90,49 +218,48 @@ def save_video(message):
 
     link = message.text
 
-    views = 0
 
     if "youtube.com" in link or "youtu.be" in link:
 
         platform = "YouTube"
-
-        try:
-            views = get_youtube_views(link) or 0
-        except:
-            views = 0
 
     elif "tiktok.com" in link:
 
         platform = "TikTok"
 
     else:
+
         bot.send_message(
             message.chat.id,
             "❌ Нужна ссылка TikTok или YouTube Shorts"
         )
+
         return
 
 
-    date = datetime.now().strftime("%Y-%m-%d")
 
     cursor.execute(
         """
         INSERT INTO videos
-        (link, platform, views, date)
-        VALUES (?, ?, ?, ?)
+        (link, platform, date)
+        VALUES (?, ?, ?)
         """,
-        (link, platform, views, date)
+        (
+            link,
+            platform,
+            datetime.now().strftime("%Y-%m-%d")
+        )
     )
+
 
     db.commit()
 
 
     bot.send_message(
         message.chat.id,
-        f"✅ Сохранил!\n"
-        f"Платформа: {platform}\n"
-        f"Просмотры: {views}"
+        "✅ Ролик сохранён"
     )
+
 
 
 bot.infinity_polling()

@@ -37,7 +37,27 @@ CREATE TABLE IF NOT EXISTS views_history (
 """)
 
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS owner (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER
+)
+""")
+
+
 db.commit()
+
+
+
+def is_owner(message):
+
+    cursor.execute(
+        "SELECT user_id FROM owner LIMIT 1"
+    )
+
+    owner = cursor.fetchone()
+
+    return owner and owner[0] == message.chat.id
 
 
 
@@ -51,13 +71,16 @@ def get_youtube_views(link):
     if not match:
         return None
 
+
     video_id = match.group(1)
+
 
     youtube = build(
         "youtube",
         "v3",
         developerKey=YOUTUBE_API_KEY
     )
+
 
     response = youtube.videos().list(
         part="statistics",
@@ -66,8 +89,9 @@ def get_youtube_views(link):
 
 
     if response.get("items"):
-        views = response["items"][0]["statistics"].get("viewCount")
-        return int(views)
+        return int(
+            response["items"][0]["statistics"]["viewCount"]
+        )
 
     return None
 
@@ -78,7 +102,74 @@ def start(message):
 
     bot.send_message(
         message.chat.id,
-        "Привет! Отправь ссылку на TikTok или YouTube Shorts."
+        "Привет! Я твой трекер просмотров."
+    )
+
+
+
+@bot.message_handler(commands=["myid"])
+def myid(message):
+
+    cursor.execute(
+        "SELECT user_id FROM owner LIMIT 1"
+    )
+
+    owner = cursor.fetchone()
+
+
+    if owner:
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Владелец уже установлен."
+        )
+        return
+
+
+    cursor.execute(
+        "INSERT INTO owner (user_id) VALUES (?)",
+        (message.chat.id,)
+    )
+
+    db.commit()
+
+
+    bot.send_message(
+        message.chat.id,
+        "✅ Ты добавлен как владелец бота."
+    )
+
+
+
+@bot.message_handler(commands=["report"])
+def report(message):
+
+    if not is_owner(message):
+        bot.send_message(
+            message.chat.id,
+            "❌ Нет доступа."
+        )
+        return
+
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM videos"
+    )
+
+    videos = cursor.fetchone()[0]
+
+
+    cursor.execute(
+        "SELECT SUM(views) FROM views_history"
+    )
+
+    views = cursor.fetchone()[0] or 0
+
+
+    bot.send_message(
+        message.chat.id,
+        f"📊 Отчёт:\n\n"
+        f"Роликов: {videos}\n"
+        f"Просмотров: {views}"
     )
 
 
@@ -86,8 +177,12 @@ def start(message):
 @bot.message_handler(commands=["update"])
 def update_views(message):
 
+    if not is_owner(message):
+        return
+
+
     cursor.execute("""
-    SELECT id, link, platform
+    SELECT id, link
     FROM videos
     WHERE platform='YouTube'
     """)
@@ -95,15 +190,12 @@ def update_views(message):
     videos = cursor.fetchall()
 
 
-    updated = 0
+    count = 0
 
 
-    for video in videos:
-
-        video_id, link, platform = video
+    for video_id, link in videos:
 
         views = get_youtube_views(link)
-
 
         if views is not None:
 
@@ -120,7 +212,7 @@ def update_views(message):
                 )
             )
 
-            updated += 1
+            count += 1
 
 
     db.commit()
@@ -128,87 +220,7 @@ def update_views(message):
 
     bot.send_message(
         message.chat.id,
-        f"✅ Проверено роликов: {updated}"
-    )
-
-
-
-@bot.message_handler(commands=["top"])
-def top(message):
-
-    cursor.execute("""
-    SELECT 
-    videos.link,
-    MAX(views_history.views)
-
-    FROM videos
-
-    JOIN views_history
-    ON videos.id = views_history.video_id
-
-    GROUP BY videos.id
-
-    ORDER BY MAX(views_history.views) DESC
-
-    LIMIT 5
-    """)
-
-
-    result = cursor.fetchall()
-
-
-    if not result:
-        bot.send_message(
-            message.chat.id,
-            "Пока нет статистики."
-        )
-        return
-
-
-    text = "🏆 Топ роликов:\n\n"
-
-
-    for i, item in enumerate(result, start=1):
-
-        link, views = item
-
-        text += (
-            f"{i}. {views} просмотров\n"
-            f"{link}\n\n"
-        )
-
-
-    bot.send_message(
-        message.chat.id,
-        text
-    )
-
-
-
-@bot.message_handler(commands=["stats"])
-def stats(message):
-
-    cursor.execute("""
-    SELECT COUNT(*)
-    FROM videos
-    """)
-
-    count = cursor.fetchone()[0]
-
-
-    cursor.execute("""
-    SELECT SUM(views)
-    FROM views_history
-    """)
-
-    views = cursor.fetchone()[0] or 0
-
-
-    bot.send_message(
-        message.chat.id,
-        f"📊 Статистика:\n\n"
-        f"Роликов: {count}\n"
-        f"Просмотров: {views}"
+        f"✅ Обновлено роликов: {count}"
     )
 
 
@@ -220,22 +232,17 @@ def save_video(message):
 
 
     if "youtube.com" in link or "youtu.be" in link:
-
         platform = "YouTube"
 
     elif "tiktok.com" in link:
-
         platform = "TikTok"
 
     else:
-
         bot.send_message(
             message.chat.id,
-            "❌ Нужна ссылка TikTok или YouTube Shorts"
+            "❌ Нужна ссылка TikTok или YouTube Shorts."
         )
-
         return
-
 
 
     cursor.execute(
@@ -251,15 +258,13 @@ def save_video(message):
         )
     )
 
-
     db.commit()
 
 
     bot.send_message(
         message.chat.id,
-        "✅ Ролик сохранён"
+        "✅ Ролик сохранён."
     )
-
 
 
 bot.infinity_polling()

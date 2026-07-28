@@ -25,7 +25,20 @@ db.commit()
 def start(message):
     bot.send_message(
         message.chat.id,
-        "Привет! Отправь ссылку на TikTok или YouTube Shorts."
+        "Привет! Я бот для учёта TikTok и YouTube Shorts.\n"
+        "Отправь ссылку на ролик."
+    )
+
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    bot.send_message(
+        message.chat.id,
+        "📌 Команды:\n\n"
+        "/week — статистика за эту неделю\n"
+        "/stats — общая статистика\n"
+        "/all — последние ролики\n"
+        "/help — помощь"
     )
 
 
@@ -58,7 +71,6 @@ def stats(message):
 def week(message):
 
     today = datetime.now()
-
     monday = today - timedelta(days=today.weekday())
 
     monday = monday.replace(
@@ -85,7 +97,6 @@ def week(message):
         return
 
     text = "📊 Статистика недели:\n\n"
-
     total = 0
 
     for platform, count in result:
@@ -93,6 +104,39 @@ def week(message):
         total += count
 
     text += f"\nВсего: {total} роликов"
+
+    bot.send_message(message.chat.id, text)
+
+
+@bot.message_handler(commands=['all'])
+def all_videos(message):
+
+    cursor.execute("""
+    SELECT platform, date, link
+    FROM videos
+    ORDER BY id DESC
+    LIMIT 10
+    """)
+
+    videos = cursor.fetchall()
+
+    if not videos:
+        bot.send_message(
+            message.chat.id,
+            "📋 Список пуст."
+        )
+        return
+
+    text = "📋 Последние ролики:\n\n"
+
+    for i, video in enumerate(videos, start=1):
+        platform, date, link = video
+
+        text += (
+            f"{i}. {platform}\n"
+            f"📅 {date}\n"
+            f"🔗 {link}\n\n"
+        )
 
     bot.send_message(message.chat.id, text)
 
@@ -115,7 +159,6 @@ def save_link(message):
         )
         return
 
-
     date = datetime.now().strftime("%Y-%m-%d")
 
     cursor.execute(
@@ -124,7 +167,6 @@ def save_link(message):
     )
 
     db.commit()
-
 
     bot.send_message(
         message.chat.id,
